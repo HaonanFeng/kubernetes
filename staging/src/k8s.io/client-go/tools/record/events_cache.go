@@ -19,6 +19,7 @@ package record
 import (
 	"encoding/json"
 	"fmt"
+	"k8s.io/kubernetes/pkg/kubelet/events"
 	"strings"
 	"sync"
 	"time"
@@ -132,19 +133,24 @@ func (f *EventSourceObjectSpamFilter) Filter(event *v1.Event) bool {
 	if found {
 		record = value.(spamRecord)
 	}
+	// if event reason is not "healthy",skip this event without restricting flow.
+	if event.Reason != events.Containerhealthy {
+		return false
+	} else {
+		// verify we have a rate limiter for this record
+		if record.rateLimiter == nil {
+			record.rateLimiter = flowcontrol.NewTokenBucketRateLimiterWithClock(f.qps, f.burst, f.clock)
+		}
 
-	// verify we have a rate limiter for this record
-	if record.rateLimiter == nil {
-		record.rateLimiter = flowcontrol.NewTokenBucketRateLimiterWithClock(f.qps, f.burst, f.clock)
+		// ensure we have available rate
+		filter := !record.rateLimiter.TryAccept()
+
+		// update the cache
+		f.cache.Add(eventKey, record)
+
+		return filter
 	}
 
-	// ensure we have available rate
-	filter := !record.rateLimiter.TryAccept()
-
-	// update the cache
-	f.cache.Add(eventKey, record)
-
-	return filter
 }
 
 // EventAggregatorKeyFunc is responsible for grouping events for aggregation
